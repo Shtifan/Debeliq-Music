@@ -6,8 +6,6 @@ ytdl_format_options = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
-    "default_search": "auto",
-    "extract_flat": False,
     "source_address": "0.0.0.0",
     "add_header": [
         "User-Agent",
@@ -49,12 +47,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if "entries" in data:
                 data = data["entries"][0]
 
-            # Only now try to get the URL
             if not data or "url" not in data:
                 print(f"Invalid data for query: {query}")
                 return None
 
-            # Add atempo filter for speed if not 1.0
             ffmpeg_opts = ffmpeg_options.copy()
             if speed != 1.0:
                 ffmpeg_opts = ffmpeg_opts.copy()

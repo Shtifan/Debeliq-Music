@@ -6,7 +6,6 @@ from discord import app_commands
 from utils.ytdl import YTDLSource
 from utils.spotify import SpotifyHelper
 
-
 with open("config.json") as f:
     cfg = json.load(f)
 
@@ -21,6 +20,7 @@ class Music(commands.Cog):
         self.loop_states = {}
         self.volumes = {}
         self.speeds = {}
+        self.start_times = {}
         self.check_empty_channels.start()
 
     def get_speed(self, gid):
@@ -112,6 +112,7 @@ class Music(commands.Cog):
                 )
                 self.current[gid] = player
                 player.query = query
+                self.start_times[gid] = discord.utils.utcnow().timestamp()
                 if text_channel:
                     await text_channel.send(f"Now playing: **{player.title}**")
             except Exception as e:
@@ -189,10 +190,21 @@ class Music(commands.Cog):
         q = self.get_queue(inter.guild.id)
         cur = self.current.get(inter.guild.id)
         if not q and not cur:
-            return await inter.response.send_message("Nothing is playing.")
+            await inter.response.send_message("Nothing is playing.")
+            return
         em = discord.Embed(title="Queue")
         if cur:
-            em.add_field(name="Now", value=cur.title, inline=False)
+            dur = int(cur.data.get("duration", 0))
+            start = self.start_times.get(inter.guild.id)
+            if start:
+                pos = int(discord.utils.utcnow().timestamp() - start)
+            else:
+                pos = 0
+            pos_str = self.format_time(pos)
+            dur_str = self.format_time(dur)
+            em.add_field(
+                name="Now", value=f"{cur.title} [{pos_str}/{dur_str}]", inline=False
+            )
         if q:
             em.add_field(
                 name="Up Next",
@@ -207,9 +219,28 @@ class Music(commands.Cog):
     async def nowplaying(self, inter):
         cur = self.current.get(inter.guild.id)
         if cur:
-            await inter.response.send_message(f"Now: **{cur.title}**")
+            dur = int(cur.data.get("duration", 0))
+            start = self.start_times.get(inter.guild.id)
+            if start:
+                pos = int(discord.utils.utcnow().timestamp() - start)
+            else:
+                pos = 0
+            pos_str = self.format_time(pos)
+            dur_str = self.format_time(dur)
+            await inter.response.send_message(
+                f"Now: **{cur.title}** [{pos_str}/{dur_str}]"
+            )
         else:
             await inter.response.send_message("Nothing is playing.")
+
+    def format_time(self, seconds):
+        seconds = int(seconds)
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"{h}:{m:02}:{s:02}"
+        else:
+            return f"{m}:{s:02}"
 
     @app_commands.command(name="stop", description="Stop and disconnect")
     async def stop(self, inter):
