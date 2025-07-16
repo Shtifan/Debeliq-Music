@@ -2,6 +2,7 @@ import asyncio
 import discord
 from yt_dlp import YoutubeDL
 
+# YTDL format options
 ytdl_format_options = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -13,15 +14,19 @@ ytdl_format_options = {
     ],
 }
 
+# FFmpeg options
 ffmpeg_options = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
 
+# Initialize YoutubeDL
 ytdl = YoutubeDL(ytdl_format_options)
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
+    """A class for streaming audio from YouTube."""
+
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data
@@ -30,6 +35,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_query(cls, query, *, loop=None, speed=1.0):
+        """Create a YTDLSource from a search query or URL."""
         loop = loop or asyncio.get_event_loop()
 
         if not query.startswith("http"):
@@ -53,7 +59,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
             ffmpeg_opts = ffmpeg_options.copy()
             if speed != 1.0:
-                ffmpeg_opts = ffmpeg_opts.copy()
                 atempo = f"atempo={speed}"
                 if "options" in ffmpeg_opts and ffmpeg_opts["options"]:
                     ffmpeg_opts["options"] += f" -af {atempo}"

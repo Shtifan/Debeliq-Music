@@ -3,6 +3,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 
 class SpotifyHelper:
+    """A helper class for interacting with the Spotify API."""
+
     def __init__(self, client_id, client_secret):
         auth = SpotifyClientCredentials(
             client_id=client_id, client_secret=client_secret
@@ -10,9 +12,11 @@ class SpotifyHelper:
         self.sp = spotipy.Spotify(auth_manager=auth)
 
     def is_spotify_url(self, url):
+        """Check if a URL is a Spotify URL."""
         return "open.spotify.com" in url
 
     def extract_tracks(self, url):
+        """Extract track information from a Spotify URL."""
         tracks = []
         if "track" in url:
             track = self.sp.track(url)
