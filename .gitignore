@@ -1,3 +1,4 @@
 config.json
 .cache
 __pycache__/
+start.bat

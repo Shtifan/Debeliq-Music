@@ -37,17 +37,19 @@ class Music(commands.Cog):
             artist = ""
             # A simple heuristic to find the artist from the title.
             # You can add more separators like '|' or 'by' if needed.
-            separators = ['-', '—', 'by', 'ft.', 'feat.']
+            separators = ["-", "—", "by", "ft.", "feat."]
             lower_title = title.lower()
 
             for sep in separators:
-                if f' {sep} ' in lower_title:
+                if f" {sep} " in lower_title:
                     # Take the part before the separator as the artist
                     artist = title.split(sep)[0].strip()
                     break
-            
+
             # Use the artist if found, otherwise use the original title for the search
-            search_term = f"{artist} official audio" if artist else f"{title} official audio"
+            search_term = (
+                f"{artist} official audio" if artist else f"{title} official audio"
+            )
             query = f"ytsearch5:{search_term}"
 
             data = await self.bot.loop.run_in_executor(
@@ -64,10 +66,13 @@ class Music(commands.Cog):
                     # Check if the found song is already in recent history
                     is_duplicate = False
                     for past_title in recent_history:
-                        if entry_title.lower() in past_title or past_title in entry_title.lower():
+                        if (
+                            entry_title.lower() in past_title
+                            or past_title in entry_title.lower()
+                        ):
                             is_duplicate = True
                             break
-                    
+
                     # If it's not a duplicate, we have found a good candidate
                     if not is_duplicate:
                         return entry_title
@@ -76,7 +81,10 @@ class Music(commands.Cog):
             # If the targeted search found no unique song, fall back to the original method.
             fallback_query = f"ytsearch5:related to {title}"
             data = await self.bot.loop.run_in_executor(
-                None, lambda: ytdl.extract_info(fallback_query, download=False, process=False)
+                None,
+                lambda: ytdl.extract_info(
+                    fallback_query, download=False, process=False
+                ),
             )
 
             if not data or "entries" not in data or not data["entries"]:
@@ -87,13 +95,16 @@ class Music(commands.Cog):
                 entry_title = entry.get("title")
                 if not entry_title:
                     continue
-                
+
                 is_duplicate = False
                 for past_title in recent_history:
-                    if entry_title.lower() in past_title or past_title in entry_title.lower():
+                    if (
+                        entry_title.lower() in past_title
+                        or past_title in entry_title.lower()
+                    ):
                         is_duplicate = True
                         break
-                
+
                 if not is_duplicate:
                     # Return the first non-duplicate song from the broader search
                     return entry_title
@@ -375,23 +386,18 @@ class Music(commands.Cog):
             d.pop(gid, None)
         await inter.response.send_message("Stopped and cleaned up.")
 
-    @app_commands.command(name="pause", description="Pause playback")
+    @app_commands.command(name="pause", description="Pause or resume playback (toggle)")
     async def pause(self, inter):
         vc = inter.guild.voice_client
-        if vc and vc.is_playing():
+        if not vc or (not vc.is_playing() and not vc.is_paused()):
+            await inter.response.send_message("Nothing is playing.")
+            return
+        if vc.is_playing():
             vc.pause()
             await inter.response.send_message("Paused.")
-        else:
-            await inter.response.send_message("Nothing to pause.")
-
-    @app_commands.command(name="resume", description="Resume playback")
-    async def resume(self, inter):
-        vc = inter.guild.voice_client
-        if vc and vc.is_paused():
+        elif vc.is_paused():
             vc.resume()
             await inter.response.send_message("Resumed.")
-        else:
-            await inter.response.send_message("Nothing paused.")
 
     @app_commands.command(name="clear", description="Clear the queue")
     async def clear(self, inter):
