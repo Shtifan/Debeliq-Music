@@ -386,6 +386,29 @@ class Music(commands.Cog):
             d.pop(gid, None)
         await inter.response.send_message("Stopped and cleaned up.")
 
+    @app_commands.command(
+        name="back", description="Play the previous song from history"
+    )
+    async def back(self, inter):
+        gid = inter.guild.id
+        history = self.get_history(gid)
+        cur = self.current.get(gid)
+        vc = inter.guild.voice_client
+        if not vc or (not vc.is_playing() and not vc.is_paused()):
+            return await inter.response.send_message("Nothing is playing.")
+        # Need at least 2 songs in history: current and previous
+        if len(history) < 2:
+            return await inter.response.send_message("No previous song in history.")
+        # Remove current song from history if present at the end
+        if cur and history and history[-1] == cur.title:
+            history.pop()
+        if not history:
+            return await inter.response.send_message("No previous song in history.")
+        prev_title = history.pop()  # Get previous song
+        self.get_queue(gid).insert(0, prev_title)
+        vc.stop()
+        await inter.response.send_message(f"Playing previous song: **{prev_title}**")
+
     @app_commands.command(name="pause", description="Pause or resume playback (toggle)")
     async def pause(self, inter):
         vc = inter.guild.voice_client
