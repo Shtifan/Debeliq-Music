@@ -232,7 +232,9 @@ class Music(commands.Cog):
             else:
                 self.current.pop(gid, None)
                 if text_channel and not autoplay_mode:
-                    await text_channel.send("Queue finished.")
+                    await text_channel.send(
+                        "Looks like my job here is done, leaving now."
+                    )
                 if vc:
                     await vc.disconnect()
                 return
@@ -319,7 +321,7 @@ class Music(commands.Cog):
 
             if text_channel:
                 await text_channel.send(
-                    "Leaving the voice channel as I'm the only one here."
+                    "Leaving because there is no one in the voice channel."
                 )
 
             self.get_queue(gid).clear()
@@ -447,7 +449,7 @@ class Music(commands.Cog):
         else:
             await inter.response.send_message("Nothing is playing.")
 
-    @app_commands.command(name="stop", description="Stop and disconnect")
+    @app_commands.command(name="stop", description="Stop music and leave voice channel")
     async def stop(self, inter):
         gid = inter.guild.id
         self.set_autoplay(gid, False)
@@ -468,7 +470,9 @@ class Music(commands.Cog):
             self.text_channels,
         ]:
             d.pop(gid, None)
-        await inter.response.send_message("Stopped playback and disconnected.")
+        await inter.response.send_message(
+            "Music stopped in the server, see you next time."
+        )
 
     @app_commands.command(name="pause", description="Pause or resume playback (toggle)")
     async def pause(self, inter):
