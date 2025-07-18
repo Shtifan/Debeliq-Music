@@ -34,7 +34,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url = data.get("url")
 
     @classmethod
-    async def from_query(cls, query, *, loop=None, speed=1.0):
+    async def from_query(cls, query, *, loop=None, speed=1.0, filter_options=None):
         """Create a YTDLSource from a search query or URL."""
         loop = loop or asyncio.get_event_loop()
 
@@ -58,12 +58,18 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 return None
 
             ffmpeg_opts = ffmpeg_options.copy()
+            options = ffmpeg_opts.get("options", "")
+
             if speed != 1.0:
-                atempo = f"atempo={speed}"
-                if "options" in ffmpeg_opts and ffmpeg_opts["options"]:
-                    ffmpeg_opts["options"] += f" -af {atempo}"
+                options += f" -af atempo={speed}"
+
+            if filter_options:
+                if "-af" in options:
+                    options += f",{filter_options}"
                 else:
-                    ffmpeg_opts["options"] = f"-af {atempo}"
+                    options += f" -af {filter_options}"
+
+            ffmpeg_opts["options"] = options
 
             return cls(discord.FFmpegPCMAudio(data["url"], **ffmpeg_opts), data=data)
 

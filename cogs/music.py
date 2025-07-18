@@ -10,6 +10,18 @@ from utils.spotify import SpotifyHelper
 with open("config.json") as f:
     cfg = json.load(f)
 
+# A dictionary of available audio filters and their ffmpeg options
+AUDIO_FILTERS = {
+    "none": None,
+    "bassboost": "bass=g=10",
+    "nightcore": "atempo=1.06,asetrate=44100*1.25",
+    "vaporwave": "asetrate=44100*0.8,aresample=44100,atempo=0.8",
+    "8d": "apulsator=hz=0.08",
+    "vibrato": "vibrato=f=6.5",
+    "tremolo": "tremolo",
+    "earrape": "acrusher=1:1:64:0:log",
+}
+
 
 class Music(commands.Cog):
     def __init__(self, bot, spotify_helper):
@@ -21,6 +33,7 @@ class Music(commands.Cog):
         self.loop_states = {}
         self.volumes = {}
         self.speeds = {}
+        self.filters = {}  # To store active filters
         self.start_times = {}
         self.autoplay_states = {}  # To store autoplay states
         self.check_empty_channels.start()
@@ -53,6 +66,14 @@ class Music(commands.Cog):
 
     def set_speed(self, gid, speed):
         self.speeds[gid] = speed
+
+    def get_filter(self, gid):
+        """Get the audio filter for a guild."""
+        return self.filters.get(gid)
+
+    def set_filter(self, gid, filter_name):
+        """Set the audio filter for a guild."""
+        self.filters[gid] = AUDIO_FILTERS.get(filter_name.lower())
 
     def get_autoplay(self, gid):
         """Get the autoplay state for a guild."""
@@ -224,8 +245,9 @@ class Music(commands.Cog):
             query = queue.pop(0)
             try:
                 speed = self.get_speed(gid)
+                audio_filter = self.get_filter(gid)
                 player = await YTDLSource.from_query(
-                    query, loop=self.bot.loop, speed=speed
+                    query, loop=self.bot.loop, speed=speed, filter_options=audio_filter
                 )
                 if player is None:
                     if text_channel:
@@ -380,6 +402,7 @@ class Music(commands.Cog):
             self.history,
             self.loop_states,
             self.volumes,
+            self.filters,
             self.autoplay_states,
         ]:
             d.pop(gid, None)
@@ -560,6 +583,32 @@ class Music(commands.Cog):
         self.get_queue(inter.guild.id).insert(0, cur.query)
         vc.stop()
         await inter.followup.send(f"Playback speed set to {rate}x (reloading...)")
+
+    @app_commands.command(name="filter", description="Apply an audio filter")
+    @app_commands.describe(
+        filter_name="The audio filter to apply. Choose 'none' to disable."
+    )
+    @app_commands.choices(
+        filter_name=[
+            app_commands.Choice(name=key, value=key) for key in AUDIO_FILTERS.keys()
+        ]
+    )
+    async def filter(self, inter, filter_name: str):
+        gid = inter.guild.id
+        vc = inter.guild.voice_client
+        cur = self.current.get(gid)
+
+        self.set_filter(gid, filter_name)
+
+        if vc and cur:
+            await inter.response.defer(thinking=True)
+            self.get_queue(gid).insert(0, cur.query)
+            vc.stop()
+            await inter.followup.send(
+                f"Filter set to **{filter_name}**. Reloading current song..."
+            )
+        else:
+            await inter.response.send_message(f"Filter set to **{filter_name}**.")
 
     @app_commands.command(name="autoplay", description="Toggle autoplay mode")
     async def autoplay(self, inter):
