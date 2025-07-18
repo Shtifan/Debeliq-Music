@@ -435,7 +435,9 @@ class Music(commands.Cog):
             dur = int(cur.data.get("duration", 0))
             start = self.start_times.get(inter.guild.id)
             if start:
-                pos = int(discord.utils.utcnow().timestamp() - start)
+                speed = self.get_speed(inter.guild.id)
+                elapsed = discord.utils.utcnow().timestamp() - start
+                pos = int(elapsed * speed)
             else:
                 pos = 0
             pos_str = self.format_time(pos)
@@ -462,7 +464,9 @@ class Music(commands.Cog):
             dur = int(cur.data.get("duration", 0))
             start = self.start_times.get(inter.guild.id)
             if start:
-                pos = int(discord.utils.utcnow().timestamp() - start)
+                speed = self.get_speed(inter.guild.id)
+                elapsed = discord.utils.utcnow().timestamp() - start
+                pos = int(elapsed * speed)
             else:
                 pos = 0
             pos_str = self.format_time(pos)
