@@ -468,7 +468,7 @@ class Music(commands.Cog):
             self.text_channels,
         ]:
             d.pop(gid, None)
-        await inter.response.send_message("Stopped and cleaned up.")
+        await inter.response.send_message("Stopped playback and disconnected.")
 
     @app_commands.command(name="pause", description="Pause or resume playback (toggle)")
     async def pause(self, inter):
