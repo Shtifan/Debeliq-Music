@@ -10,6 +10,7 @@ with open("config.json") as f:
 # Set up intents
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True  # Enable voice state intents
 
 # Initialize the bot
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -35,4 +36,5 @@ async def main():
 
 
 # Run the main function
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

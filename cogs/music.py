@@ -1,7 +1,7 @@
 import discord
 import random
 import json
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 from utils.ytdl import YTDLSource, ytdl
 from utils.spotify import SpotifyHelper
@@ -36,7 +36,7 @@ class Music(commands.Cog):
         self.filters = {}  # To store active filters
         self.start_times = {}
         self.autoplay_states = {}  # To store autoplay states
-        self.check_empty_channels.start()
+        self.text_channels = {}  # To store the text channel for each guild
 
     # --- Helper Methods ---
 
@@ -91,13 +91,6 @@ class Music(commands.Cog):
             return f"{h}:{m:02}:{s:02}"
         else:
             return f"{m}:{s:02}"
-
-    def is_voice_channel_empty(self, gid):
-        vc = discord.utils.get(self.bot.voice_clients, guild__id=gid)
-        if not vc or not vc.channel:
-            return True
-        users = [m for m in vc.channel.members if not m.bot]
-        return len(users) == 0
 
     async def join_vc(self, inter):
         if inter.user.voice:
@@ -207,6 +200,9 @@ class Music(commands.Cog):
         loop_mode = self.get_loop(gid)
         autoplay_mode = self.get_autoplay(gid)
 
+        if text_channel:
+            self.text_channels[gid] = text_channel
+
         if loop_mode == "song" and self.current.get(gid) and not from_back:
             queue.insert(0, self.current[gid].query)
         elif loop_mode == "queue" and self.current.get(gid) and not from_back:
@@ -223,7 +219,7 @@ class Music(commands.Cog):
                 if next_song_query:
                     queue.append(next_song_query)
                     if text_channel:
-                        await text_channel.send(f"Autoplaying: **{next_song_query}**")
+                        await text_channel.send(f"Autoplaying: **{next_song_query}**.")
                 else:
                     self.current.pop(gid, None)
                     if text_channel:
@@ -260,7 +256,7 @@ class Music(commands.Cog):
                     player,
                     after=lambda e: self.bot.loop.call_soon_threadsafe(
                         self.bot.loop.create_task,
-                        self.play_next(gid, text_channel),
+                        self.play_next(gid, self.text_channels.get(gid)),
                     ),
                 )
                 self.current[gid] = player
@@ -272,7 +268,7 @@ class Music(commands.Cog):
                     # Check if the last message was the autoplay announcement
                     last_message = [m async for m in text_channel.history(limit=1)][0]
                     if "Autoplaying" not in last_message.content:
-                        await text_channel.send(f"Now playing: **{player.title}**")
+                        await text_channel.send(f"Started playing: **{player.title}**.")
 
             except Exception as e:
                 print(f"Error playing {query}: {e}")
@@ -282,18 +278,72 @@ class Music(commands.Cog):
         else:
             self.current.pop(gid, None)
 
-    # --- Tasks ---
+    # --- Command Checks ---
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Check if the user is in the same voice channel as the bot."""
+        vc = interaction.guild.voice_client
+        if not vc or not vc.is_connected():
+            return True  # Allow commands if bot is not in a channel
 
-    @tasks.loop(seconds=30)
-    async def check_empty_channels(self):
-        for vc in self.bot.voice_clients:
-            if not vc.is_connected():
-                continue
-            if self.is_voice_channel_empty(vc.guild.id):
-                await vc.disconnect()
+        # Allow /play even if not in the same channel, as it can be used to summon the bot
+        if interaction.command.name in ("play", "playnext"):
+            return True
+
+        if interaction.user.voice and interaction.user.voice.channel == vc.channel:
+            return True
+
+        await interaction.response.send_message(
+            "You must be in the same voice channel as the bot to use this command.",
+            ephemeral=True,
+        )
+        return False
+
+    # --- Events ---
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        """Handle the bot leaving an empty voice channel."""
+        # Ignore the bot's own voice state updates or if the user is just muting/deafening
+        if member.id == self.bot.user.id or before.channel == after.channel:
+            return
+
+        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+
+        # If the bot is not in a voice channel, or the event is not for the bot's channel, ignore it
+        if not vc or not vc.channel or before.channel != vc.channel:
+            return
+
+        # Check if the bot is now the only member in the channel
+        if len(vc.channel.members) == 1 and vc.channel.members[0] == self.bot.user:
+            gid = member.guild.id
+            text_channel = self.text_channels.get(gid)
+
+            if text_channel:
+                await text_channel.send(
+                    "Leaving the voice channel as I'm the only one here."
+                )
+
+            self.get_queue(gid).clear()
+
+            if vc.is_playing() or vc.is_paused():
+                vc.stop()
+
+            await vc.disconnect()
+
+            # Clean up all associated data for the guild
+            for d in [
+                self.queues,
+                self.current,
+                self.history,
+                self.loop_states,
+                self.volumes,
+                self.filters,
+                self.autoplay_states,
+                self.start_times,
+                self.text_channels,
+            ]:
+                d.pop(gid, None)
 
     # --- Playback Commands ---
-
     @app_commands.command(name="play", description="Play music from search or link")
     @app_commands.describe(query="YouTube URL, Spotify URL or name search")
     async def play(self, inter, query: str):
@@ -325,15 +375,20 @@ class Music(commands.Cog):
             if not vc:
                 return
 
+        # Store the channel where the command was initiated
+        self.text_channels[inter.guild.id] = inter.channel
+
         if not vc.is_playing() and not vc.is_paused():
             await self.play_next(inter.guild.id, inter.channel)
 
         if is_spotify:
             await inter.followup.send(
-                f"Added {len(tracks)} tracks from Spotify to the queue."
+                f"Added {len(tracks)} tracks from Spotify to the queue. Autoplay is {'on' if self.get_autoplay(inter.guild.id) else 'off'}."
             )
         else:
-            await inter.followup.send(f"Added to queue: `{query}`.")
+            await inter.followup.send(
+                f"Added to queue: `{query}`. Autoplay is {'on' if self.get_autoplay(inter.guild.id) else 'off'}."
+            )
 
     @app_commands.command(
         name="playnext", description="Add a song to the front of the queue"
@@ -368,15 +423,20 @@ class Music(commands.Cog):
             if not vc:
                 return
 
+        # Store the channel where the command was initiated
+        self.text_channels[inter.guild.id] = inter.channel
+
         if not vc.is_playing() and not vc.is_paused():
             await self.play_next(inter.guild.id, inter.channel)
 
         if is_spotify:
             await inter.followup.send(
-                f"Added {len(tracks)} tracks from Spotify to the front of the queue."
+                f"Added {len(tracks)} tracks from Spotify to the front of the queue. Autoplay is {'on' if self.get_autoplay(inter.guild.id) else 'off'}."
             )
         else:
-            await inter.followup.send(f"Added to front of queue: `{query}`.")
+            await inter.followup.send(
+                f"Added to front of queue: `{query}`. Autoplay is {'on' if self.get_autoplay(inter.guild.id) else 'off'}."
+            )
 
     @app_commands.command(name="skip", description="Skip current song")
     async def skip(self, inter):
@@ -404,6 +464,8 @@ class Music(commands.Cog):
             self.volumes,
             self.filters,
             self.autoplay_states,
+            self.start_times,
+            self.text_channels,
         ]:
             d.pop(gid, None)
         await inter.response.send_message("Stopped and cleaned up.")
@@ -445,7 +507,6 @@ class Music(commands.Cog):
         await inter.response.send_message(f"Playing previous song: **{prev_title}**")
 
     # --- Queue Management Commands ---
-
     @app_commands.command(name="queue", description="Show the queue")
     async def queue_cmd(self, inter):
         q = self.get_queue(inter.guild.id)
@@ -540,7 +601,6 @@ class Music(commands.Cog):
         await inter.response.send_message(f"Swapped positions {a} and {b}.")
 
     # --- Audio Settings and Effects ---
-
     @app_commands.command(name="loop", description="Toggle loop mode")
     async def loop(self, inter):
         gid = inter.guild.id
@@ -619,11 +679,6 @@ class Music(commands.Cog):
         await inter.response.send_message(
             f"Autoplay is now **{'on' if new_state else 'off'}**."
         )
-
-    # --- Cog Lifecycle ---
-
-    async def cog_unload(self):
-        self.check_empty_channels.cancel()
 
 
 async def setup(bot):
