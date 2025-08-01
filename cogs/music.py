@@ -1,6 +1,7 @@
 import discord
 import random
 import json
+import asyncio  # Import asyncio for locking
 from discord.ext import commands
 from discord import app_commands
 from utils.ytdl import YTDLSource, ytdl
@@ -37,8 +38,13 @@ class Music(commands.Cog):
         self.start_times = {}
         self.autoplay_states = {}  # To store autoplay states
         self.text_channels = {}  # To store the text channel for each guild
+        self.locks = {}  # Dictionary to hold a lock for each guild
 
     # --- Helper Methods ---
+
+    def get_lock(self, gid):
+        """Get or create a lock for a specific guild."""
+        return self.locks.setdefault(gid, asyncio.Lock())
 
     def get_queue(self, gid):
         return self.queues.setdefault(gid, [])
@@ -342,6 +348,7 @@ class Music(commands.Cog):
                 self.autoplay_states,
                 self.start_times,
                 self.text_channels,
+                self.locks,  # Also clear the lock
             ]:
                 d.pop(gid, None)
 
@@ -368,20 +375,24 @@ class Music(commands.Cog):
         else:
             tracks = [query]
 
-        q = self.get_queue(inter.guild.id)
-        q.extend(tracks)
+        # Acquire the lock for this guild to prevent race conditions
+        lock = self.get_lock(inter.guild.id)
+        async with lock:
+            q = self.get_queue(inter.guild.id)
+            q.extend(tracks)
 
-        vc = inter.guild.voice_client
-        if not vc:
-            vc = await self.join_vc(inter)
+            vc = inter.guild.voice_client
             if not vc:
-                return
+                vc = await self.join_vc(inter)
+                if not vc:
+                    return
 
-        # Store the channel where the command was initiated
-        self.text_channels[inter.guild.id] = inter.channel
+            # Store the channel where the command was initiated
+            self.text_channels[inter.guild.id] = inter.channel
 
-        if not vc.is_playing() and not vc.is_paused():
-            await self.play_next(inter.guild.id, inter.channel)
+            # If the bot isn't already playing, start the player.
+            if not vc.is_playing() and not vc.is_paused():
+                await self.play_next(inter.guild.id, inter.channel)
 
         if is_spotify:
             await inter.followup.send(
@@ -416,20 +427,24 @@ class Music(commands.Cog):
         else:
             tracks = [query]
 
-        q = self.get_queue(inter.guild.id)
-        q[:0] = tracks
+        # Acquire the lock for this guild to prevent race conditions
+        lock = self.get_lock(inter.guild.id)
+        async with lock:
+            q = self.get_queue(inter.guild.id)
+            q[:0] = tracks
 
-        vc = inter.guild.voice_client
-        if not vc:
-            vc = await self.join_vc(inter)
+            vc = inter.guild.voice_client
             if not vc:
-                return
+                vc = await self.join_vc(inter)
+                if not vc:
+                    return
 
-        # Store the channel where the command was initiated
-        self.text_channels[inter.guild.id] = inter.channel
+            # Store the channel where the command was initiated
+            self.text_channels[inter.guild.id] = inter.channel
 
-        if not vc.is_playing() and not vc.is_paused():
-            await self.play_next(inter.guild.id, inter.channel)
+            # If the bot isn't already playing, start the player.
+            if not vc.is_playing() and not vc.is_paused():
+                await self.play_next(inter.guild.id, inter.channel)
 
         if is_spotify:
             await inter.followup.send(
@@ -458,6 +473,7 @@ class Music(commands.Cog):
             self.get_queue(gid).clear()
             vc.stop()
             await vc.disconnect()
+        # Clean up all associated data for the guild
         for d in [
             self.queues,
             self.current,
@@ -468,6 +484,7 @@ class Music(commands.Cog):
             self.autoplay_states,
             self.start_times,
             self.text_channels,
+            self.locks,
         ]:
             d.pop(gid, None)
         await inter.response.send_message(
