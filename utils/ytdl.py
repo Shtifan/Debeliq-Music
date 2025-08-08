@@ -4,14 +4,21 @@ from yt_dlp import YoutubeDL
 
 # YTDL format options
 ytdl_format_options = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
+    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",  # Force non-DASH formats first
     "quiet": True,
+    "no_warnings": True,
+    "skip_unavailable_fragments": True,
     "source_address": "0.0.0.0",
-    "add_header": [
-        "User-Agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    ],
+    "nocheckcertificate": True,
+    "extract_flat": False,  # Ensure we get real stream URLs
+    "noplaylist": True,  # Only one video at a time
+    "concurrent_fragment_downloads": 1,  # Prevents SABR-triggering parallel requests
+    "http_headers": {  # Mimic a real browser to bypass restrictions
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/127.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    },
 }
 
 # FFmpeg options
@@ -20,7 +27,6 @@ ffmpeg_options = {
     "options": "-vn",
 }
 
-# Initialize YoutubeDL
 ytdl = YoutubeDL(ytdl_format_options)
 
 
@@ -35,7 +41,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_query(cls, query, *, loop=None, speed=1.0, filter_options=None):
-        """Create a YTDLSource from a search query or URL."""
         loop = loop or asyncio.get_event_loop()
 
         if not query.startswith("http"):
@@ -54,7 +59,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 data = data["entries"][0]
 
             if not data or "url" not in data:
-                print(f"Invalid data for query: {query}")
+                print(f"Invalid data for query: {query} - URL not found.")
                 return None
 
             ffmpeg_opts = ffmpeg_options.copy()

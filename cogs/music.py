@@ -1,7 +1,7 @@
 import discord
 import random
 import json
-import asyncio  # Import asyncio for locking
+import asyncio
 from discord.ext import commands
 from discord import app_commands
 from utils.ytdl import YTDLSource, ytdl
@@ -11,7 +11,6 @@ from utils.spotify import SpotifyHelper
 with open("config.json") as f:
     cfg = json.load(f)
 
-# A dictionary of available audio filters and their ffmpeg options
 AUDIO_FILTERS = {
     "none": None,
     "bassboost": "bass=g=10",
@@ -34,16 +33,44 @@ class Music(commands.Cog):
         self.loop_states = {}
         self.volumes = {}
         self.speeds = {}
-        self.filters = {}  # To store active filters
+        self.filters = {}
         self.start_times = {}
-        self.autoplay_states = {}  # To store autoplay states
-        self.text_channels = {}  # To store the text channel for each guild
-        self.locks = {}  # Dictionary to hold a lock for each guild
+        self.autoplay_states = {}
+        self.text_channels = {}
+        self.locks = {}
+
+    # --- New: Leave instantly if VC empty ---
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.bot:
+            return
+        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+        if not vc or not vc.channel:
+            return
+        # No non-bot members left
+        if len([m for m in vc.channel.members if not m.bot]) == 0:
+            gid = member.guild.id
+            self.set_autoplay(gid, False)
+            self.get_queue(gid).clear()
+            vc.stop()
+            await vc.disconnect()
+            # Clean up all data
+            for d in [
+                self.queues,
+                self.current,
+                self.history,
+                self.loop_states,
+                self.volumes,
+                self.filters,
+                self.autoplay_states,
+                self.start_times,
+                self.text_channels,
+                self.locks,
+            ]:
+                d.pop(gid, None)
 
     # --- Helper Methods ---
-
     def get_lock(self, gid):
-        """Get or create a lock for a specific guild."""
         return self.locks.setdefault(gid, asyncio.Lock())
 
     def get_queue(self, gid):
@@ -74,29 +101,22 @@ class Music(commands.Cog):
         self.speeds[gid] = speed
 
     def get_filter(self, gid):
-        """Get the audio filter for a guild."""
         return self.filters.get(gid)
 
     def set_filter(self, gid, filter_name):
-        """Set the audio filter for a guild."""
         self.filters[gid] = AUDIO_FILTERS.get(filter_name.lower())
 
     def get_autoplay(self, gid):
-        """Get the autoplay state for a guild."""
         return self.autoplay_states.get(gid, True)
 
     def set_autoplay(self, gid, state):
-        """Set the autoplay state for a guild."""
         self.autoplay_states[gid] = state
 
     def format_time(self, seconds):
         seconds = int(seconds)
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
-        if h:
-            return f"{h}:{m:02}:{s:02}"
-        else:
-            return f"{m}:{s:02}"
+        return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
     async def join_vc(self, inter):
         if inter.user.voice:
@@ -110,60 +130,32 @@ class Music(commands.Cog):
         await inter.followup.send("Join a voice channel first.", ephemeral=True)
         return None
 
-    # --- Core Music Logic ---
-
     async def _find_related_song(self, title: str, history: list):
-        """
-        Searches for a related song that is not in the recent history.
-        It first tries a targeted search for the same artist, then falls back to a broader search.
-        """
         try:
-            # --- Stage 1: Targeted Search ---
             artist = ""
-            # A simple heuristic to find the artist from the title.
-            # You can add more separators like '|' or 'by' if needed.
             separators = ["-", "—", "by", "ft.", "feat."]
             lower_title = title.lower()
-
             for sep in separators:
                 if f" {sep} " in lower_title:
-                    # Take the part before the separator as the artist
                     artist = title.split(sep)[0].strip()
                     break
-
-            # Use the artist if found, otherwise use the original title for the search
             search_term = (
                 f"{artist} official audio" if artist else f"{title} official audio"
             )
             query = f"ytsearch5:{search_term}"
-
             data = await self.bot.loop.run_in_executor(
                 None, lambda: ytdl.extract_info(query, download=False, process=False)
             )
-
             if data and "entries" in data and data["entries"]:
                 recent_history = [h.lower() for h in history[-10:]]
                 for entry in data["entries"]:
                     entry_title = entry.get("title")
-                    if not entry_title:
-                        continue
-
-                    # Check if the found song is already in recent history
-                    is_duplicate = False
-                    for past_title in recent_history:
-                        if (
-                            entry_title.lower() in past_title
-                            or past_title in entry_title.lower()
-                        ):
-                            is_duplicate = True
-                            break
-
-                    # If it's not a duplicate, we have found a good candidate
-                    if not is_duplicate:
+                    if entry_title and all(
+                        entry_title.lower() not in past
+                        and past not in entry_title.lower()
+                        for past in recent_history
+                    ):
                         return entry_title
-
-            # --- Stage 2: Fallback to Broader Search ---
-            # If the targeted search found no unique song, fall back to the original method.
             fallback_query = f"ytsearch5:related to {title}"
             data = await self.bot.loop.run_in_executor(
                 None,
@@ -171,31 +163,17 @@ class Music(commands.Cog):
                     fallback_query, download=False, process=False
                 ),
             )
-
             if not data or "entries" not in data or not data["entries"]:
                 return None
-
             recent_history = [h.lower() for h in history[-10:]]
             for entry in data["entries"]:
                 entry_title = entry.get("title")
-                if not entry_title:
-                    continue
-
-                is_duplicate = False
-                for past_title in recent_history:
-                    if (
-                        entry_title.lower() in past_title
-                        or past_title in entry_title.lower()
-                    ):
-                        is_duplicate = True
-                        break
-
-                if not is_duplicate:
-                    # Return the first non-duplicate song from the broader search
+                if entry_title and all(
+                    entry_title.lower() not in past and past not in entry_title.lower()
+                    for past in recent_history
+                ):
                     return entry_title
-
-            return None  # No suitable song found in either search
-
+            return None
         except Exception as e:
             print(f"Error finding related song: {e}")
             return None
@@ -205,15 +183,14 @@ class Music(commands.Cog):
         queue = self.get_queue(gid)
         loop_mode = self.get_loop(gid)
         autoplay_mode = self.get_autoplay(gid)
-
         if text_channel:
             self.text_channels[gid] = text_channel
-
         if loop_mode == "song" and self.current.get(gid) and not from_back:
             queue.insert(0, self.current[gid].query)
         elif loop_mode == "queue" and self.current.get(gid) and not from_back:
             queue.append(self.current[gid].query)
 
+        # --- New: Leave instantly if queue empty and autoplay off ---
         if not queue:
             if autoplay_mode and self.current.get(gid):
                 last_song_title = self.current.get(gid).title
@@ -221,28 +198,55 @@ class Music(commands.Cog):
                 next_song_query = await self._find_related_song(
                     last_song_title, history
                 )
-
                 if next_song_query:
                     queue.append(next_song_query)
                     if text_channel:
                         await text_channel.send(f"Autoplaying: **{next_song_query}**.")
                 else:
+                    self.set_autoplay(gid, False)
+                    self.get_queue(gid).clear()
                     self.current.pop(gid, None)
-                    if text_channel:
-                        await text_channel.send(
-                            "Autoplay could not find a unique related song. Queue finished."
-                        )
                     if vc:
+                        vc.stop()
                         await vc.disconnect()
+                    for d in [
+                        self.queues,
+                        self.current,
+                        self.history,
+                        self.loop_states,
+                        self.volumes,
+                        self.filters,
+                        self.autoplay_states,
+                        self.start_times,
+                        self.text_channels,
+                        self.locks,
+                    ]:
+                        d.pop(gid, None)
                     return
             else:
+                self.set_autoplay(gid, False)
+                self.get_queue(gid).clear()
                 self.current.pop(gid, None)
-                if text_channel and not autoplay_mode:
+                if text_channel:
                     await text_channel.send(
                         "Looks like my job here is done, leaving now."
                     )
                 if vc:
+                    vc.stop()
                     await vc.disconnect()
+                for d in [
+                    self.queues,
+                    self.current,
+                    self.history,
+                    self.loop_states,
+                    self.volumes,
+                    self.filters,
+                    self.autoplay_states,
+                    self.start_times,
+                    self.text_channels,
+                    self.locks,
+                ]:
+                    d.pop(gid, None)
                 return
 
         if vc:
@@ -258,7 +262,6 @@ class Music(commands.Cog):
                         await text_channel.send(f"Could not play `{query}`. Skipping.")
                     await self.play_next(gid, text_channel)
                     return
-
                 player.volume = self.get_vol(gid)
                 vc.play(
                     player,
@@ -271,13 +274,10 @@ class Music(commands.Cog):
                 player.query = query
                 self.get_history(gid).append(player.title)
                 self.start_times[gid] = discord.utils.utcnow().timestamp()
-
                 if text_channel:
-                    # Check if the last message was the autoplay announcement
                     last_message = [m async for m in text_channel.history(limit=1)][0]
                     if "Autoplaying" not in last_message.content:
                         await text_channel.send(f"Started playing: **{player.title}**.")
-
             except Exception as e:
                 print(f"Error playing {query}: {e}")
                 if text_channel:
