@@ -19,7 +19,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     """Event handler for when the bot is ready."""
-    print(f"Logged in as {bot.user}")
+    print(f"Bot logged in successfully!")
     try:
         # Sync global commands
         synced = await bot.tree.sync()
