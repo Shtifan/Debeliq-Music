@@ -306,52 +306,6 @@ class Music(commands.Cog):
         )
         return False
 
-    # --- Events ---
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        """Handle the bot leaving an empty voice channel."""
-        # Ignore the bot's own voice state updates or if the user is just muting/deafening
-        if member.id == self.bot.user.id or before.channel == after.channel:
-            return
-
-        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
-
-        # If the bot is not in a voice channel, or the event is not for the bot's channel, ignore it
-        if not vc or not vc.channel or before.channel != vc.channel:
-            return
-
-        # Check if the bot is now the only member in the channel
-        if len(vc.channel.members) == 1 and vc.channel.members[0] == self.bot.user:
-            gid = member.guild.id
-            text_channel = self.text_channels.get(gid)
-
-            if text_channel:
-                await text_channel.send(
-                    "Leaving because there is no one in the voice channel."
-                )
-
-            self.get_queue(gid).clear()
-
-            if vc.is_playing() or vc.is_paused():
-                vc.stop()
-
-            await vc.disconnect()
-
-            # Clean up all associated data for the guild
-            for d in [
-                self.queues,
-                self.current,
-                self.history,
-                self.loop_states,
-                self.volumes,
-                self.filters,
-                self.autoplay_states,
-                self.start_times,
-                self.text_channels,
-                self.locks,  # Also clear the lock
-            ]:
-                d.pop(gid, None)
-
     # --- Playback Commands ---
     @app_commands.command(name="play", description="Play music from search or link")
     @app_commands.describe(query="YouTube URL, Spotify URL or name search")
