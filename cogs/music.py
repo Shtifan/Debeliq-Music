@@ -1,7 +1,7 @@
-import asyncio
+import discord
 import random
 import json
-import discord
+import asyncio  # Import asyncio for locking
 from discord.ext import commands
 from discord import app_commands
 from utils.ytdl import YTDLSource, ytdl
@@ -11,7 +11,7 @@ from utils.spotify import SpotifyHelper
 with open("config.json") as f:
     cfg = json.load(f)
 
-
+# A dictionary of available audio filters and their ffmpeg options
 AUDIO_FILTERS = {
     "none": None,
     "bassboost": "bass=g=10",
@@ -25,131 +25,80 @@ AUDIO_FILTERS = {
 
 
 class Music(commands.Cog):
-    def __init__(self, bot, spotify_helper: SpotifyHelper):
+    def __init__(self, bot, spotify_helper):
         self.bot = bot
         self.spotify_helper = spotify_helper
-
-        # Per-guild state
         self.queues = {}
         self.current = {}
         self.history = {}
         self.loop_states = {}
         self.volumes = {}
         self.speeds = {}
-        self.filters = {}
+        self.filters = {}  # To store active filters
         self.start_times = {}
-        self.autoplay_states = {}
-        self.text_channels = {}
-        self.locks = {}
+        self.autoplay_states = {}  # To store autoplay states
+        self.text_channels = {}  # To store the text channel for each guild
+        self.locks = {}  # Dictionary to hold a lock for each guild
 
-    # -------------------
-    # Cleanup helper
-    # -------------------
-    def cleanup_guild_data(self, gid: int):
-        """Clear all music-related data for a guild."""
-        for d in [
-            self.queues,
-            self.current,
-            self.history,
-            self.loop_states,
-            self.volumes,
-            self.filters,
-            self.autoplay_states,
-            self.start_times,
-            self.text_channels,
-            self.locks,
-        ]:
-            d.pop(gid, None)
+    # --- Helper Methods ---
 
-    # -------------------
-    # Voice state listener (avoid race conditions)
-    # -------------------
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before, after):
-        # Only act when a non-bot user leaves and bot is alone
-        if member.bot:
-            return
-
-        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
-        if not vc or not vc.channel:
-            return
-
-        # If no non-bot members left in channel, wait briefly then re-check
-        if len([m for m in vc.channel.members if not m.bot]) == 0:
-            await asyncio.sleep(3)  # small delay to avoid race with play_next
-            if len([m for m in vc.channel.members if not m.bot]) == 0:
-                gid = member.guild.id
-                # Stop autoplay immediately so play_next doesn't try to auto enqueue
-                self.set_autoplay(gid, False)
-                self.get_queue(gid).clear()
-                try:
-                    vc.stop()
-                except Exception:
-                    pass
-                try:
-                    await vc.disconnect()
-                except Exception:
-                    pass
-                self.cleanup_guild_data(gid)
-
-    # -------------------
-    # State getters/setters
-    # -------------------
-    def get_lock(self, gid: int):
+    def get_lock(self, gid):
+        """Get or create a lock for a specific guild."""
         return self.locks.setdefault(gid, asyncio.Lock())
 
-    def get_queue(self, gid: int):
+    def get_queue(self, gid):
         return self.queues.setdefault(gid, [])
 
-    def get_history(self, gid: int):
+    def get_history(self, gid):
         return self.history.setdefault(gid, [])
 
-    def get_loop(self, gid: int):
+    def get_loop(self, gid):
         return self.loop_states.get(gid)
 
-    def set_loop(self, gid: int, state):
+    def set_loop(self, gid, state):
         self.loop_states[gid] = state
 
-    def get_vol(self, gid: int):
+    def get_vol(self, gid):
         return self.volumes.get(gid, 1.0)
 
-    def set_vol(self, gid: int, vol: float):
+    def set_vol(self, gid, vol):
         self.volumes[gid] = vol
         vc = discord.utils.get(self.bot.voice_clients, guild__id=gid)
-        if vc and getattr(vc, "source", None):
-            try:
-                vc.source.volume = vol
-            except Exception:
-                pass
+        if vc and vc.source:
+            vc.source.volume = vol
 
-    def get_speed(self, gid: int):
+    def get_speed(self, gid):
         return self.speeds.get(gid, 1.0)
 
-    def set_speed(self, gid: int, speed: float):
+    def set_speed(self, gid, speed):
         self.speeds[gid] = speed
 
-    def get_filter(self, gid: int):
+    def get_filter(self, gid):
+        """Get the audio filter for a guild."""
         return self.filters.get(gid)
 
-    def set_filter(self, gid: int, filter_name: str):
+    def set_filter(self, gid, filter_name):
+        """Set the audio filter for a guild."""
         self.filters[gid] = AUDIO_FILTERS.get(filter_name.lower())
 
-    def get_autoplay(self, gid: int):
+    def get_autoplay(self, gid):
+        """Get the autoplay state for a guild."""
         return self.autoplay_states.get(gid, True)
 
-    def set_autoplay(self, gid: int, state: bool):
+    def set_autoplay(self, gid, state):
+        """Set the autoplay state for a guild."""
         self.autoplay_states[gid] = state
 
-    def format_time(self, seconds: int):
+    def format_time(self, seconds):
         seconds = int(seconds)
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
-        return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
+        if h:
+            return f"{h}:{m:02}:{s:02}"
+        else:
+            return f"{m}:{s:02}"
 
-    # -------------------
-    # Join VC helper
-    # -------------------
-    async def join_vc(self, inter: discord.Interaction):
+    async def join_vc(self, inter):
         if inter.user.voice:
             ch = inter.user.voice.channel
             vc = inter.guild.voice_client
@@ -161,37 +110,60 @@ class Music(commands.Cog):
         await inter.followup.send("Join a voice channel first.", ephemeral=True)
         return None
 
-    # -------------------
-    # Autoplay: find related song
-    # -------------------
+    # --- Core Music Logic ---
+
     async def _find_related_song(self, title: str, history: list):
+        """
+        Searches for a related song that is not in the recent history.
+        It first tries a targeted search for the same artist, then falls back to a broader search.
+        """
         try:
+            # --- Stage 1: Targeted Search ---
             artist = ""
+            # A simple heuristic to find the artist from the title.
+            # You can add more separators like '|' or 'by' if needed.
             separators = ["-", "—", "by", "ft.", "feat."]
             lower_title = title.lower()
+
             for sep in separators:
                 if f" {sep} " in lower_title:
+                    # Take the part before the separator as the artist
                     artist = title.split(sep)[0].strip()
                     break
+
+            # Use the artist if found, otherwise use the original title for the search
             search_term = (
                 f"{artist} official audio" if artist else f"{title} official audio"
             )
             query = f"ytsearch5:{search_term}"
+
             data = await self.bot.loop.run_in_executor(
                 None, lambda: ytdl.extract_info(query, download=False, process=False)
             )
+
             if data and "entries" in data and data["entries"]:
                 recent_history = [h.lower() for h in history[-10:]]
                 for entry in data["entries"]:
                     entry_title = entry.get("title")
-                    if entry_title and all(
-                        entry_title.lower() not in past
-                        and past not in entry_title.lower()
-                        for past in recent_history
-                    ):
+                    if not entry_title:
+                        continue
+
+                    # Check if the found song is already in recent history
+                    is_duplicate = False
+                    for past_title in recent_history:
+                        if (
+                            entry_title.lower() in past_title
+                            or past_title in entry_title.lower()
+                        ):
+                            is_duplicate = True
+                            break
+
+                    # If it's not a duplicate, we have found a good candidate
+                    if not is_duplicate:
                         return entry_title
 
-            # fallback
+            # --- Stage 2: Fallback to Broader Search ---
+            # If the targeted search found no unique song, fall back to the original method.
             fallback_query = f"ytsearch5:related to {title}"
             data = await self.bot.loop.run_in_executor(
                 None,
@@ -199,35 +171,36 @@ class Music(commands.Cog):
                     fallback_query, download=False, process=False
                 ),
             )
+
             if not data or "entries" not in data or not data["entries"]:
                 return None
+
             recent_history = [h.lower() for h in history[-10:]]
             for entry in data["entries"]:
                 entry_title = entry.get("title")
-                if entry_title and all(
-                    entry_title.lower() not in past and past not in entry_title.lower()
-                    for past in recent_history
-                ):
+                if not entry_title:
+                    continue
+
+                is_duplicate = False
+                for past_title in recent_history:
+                    if (
+                        entry_title.lower() in past_title
+                        or past_title in entry_title.lower()
+                    ):
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    # Return the first non-duplicate song from the broader search
                     return entry_title
-            return None
+
+            return None  # No suitable song found in either search
+
         except Exception as e:
             print(f"Error finding related song: {e}")
             return None
 
-    # -------------------
-    # Safety wrapper for play_next when used in after= callbacks
-    # -------------------
-    async def safe_play_next(self, gid: int):
-        vc = discord.utils.get(self.bot.voice_clients, guild__id=gid)
-        if vc and getattr(vc, "is_connected", lambda: False)():
-            await self.play_next(gid, self.text_channels.get(gid))
-
-    # -------------------
-    # Core playback flow
-    # -------------------
-    async def play_next(
-        self, gid: int, text_channel: discord.TextChannel = None, from_back=False
-    ):
+    async def play_next(self, gid, text_channel=None, from_back=False):
         vc = discord.utils.get(self.bot.voice_clients, guild__id=gid)
         queue = self.get_queue(gid)
         loop_mode = self.get_loop(gid)
@@ -236,13 +209,11 @@ class Music(commands.Cog):
         if text_channel:
             self.text_channels[gid] = text_channel
 
-        # Loop handling
         if loop_mode == "song" and self.current.get(gid) and not from_back:
             queue.insert(0, self.current[gid].query)
         elif loop_mode == "queue" and self.current.get(gid) and not from_back:
             queue.append(self.current[gid].query)
 
-        # If queue empty -> handle autoplay or leave
         if not queue:
             if autoplay_mode and self.current.get(gid):
                 last_song_title = self.current.get(gid).title
@@ -250,56 +221,30 @@ class Music(commands.Cog):
                 next_song_query = await self._find_related_song(
                     last_song_title, history
                 )
+
                 if next_song_query:
                     queue.append(next_song_query)
                     if text_channel:
-                        try:
-                            await text_channel.send(
-                                f"Autoplaying: **{next_song_query}**."
-                            )
-                        except Exception:
-                            pass
+                        await text_channel.send(f"Autoplaying: **{next_song_query}**.")
                 else:
-                    # No autoplay candidate -> stop and cleanup
-                    self.set_autoplay(gid, False)
-                    self.get_queue(gid).clear()
                     self.current.pop(gid, None)
+                    if text_channel:
+                        await text_channel.send(
+                            "Autoplay could not find a unique related song. Queue finished."
+                        )
                     if vc:
-                        try:
-                            vc.stop()
-                        except Exception:
-                            pass
-                        try:
-                            await vc.disconnect()
-                        except Exception:
-                            pass
-                    self.cleanup_guild_data(gid)
+                        await vc.disconnect()
                     return
             else:
-                # Normal leave
-                self.set_autoplay(gid, False)
-                self.get_queue(gid).clear()
                 self.current.pop(gid, None)
-                if text_channel:
-                    try:
-                        await text_channel.send(
-                            "Looks like my job here is done, leaving now."
-                        )
-                    except Exception:
-                        pass
+                if text_channel and not autoplay_mode:
+                    await text_channel.send(
+                        "Looks like my job here is done, leaving now."
+                    )
                 if vc:
-                    try:
-                        vc.stop()
-                    except Exception:
-                        pass
-                    try:
-                        await vc.disconnect()
-                    except Exception:
-                        pass
-                self.cleanup_guild_data(gid)
+                    await vc.disconnect()
                 return
 
-        # Play next if we still have a VC
         if vc:
             query = queue.pop(0)
             try:
@@ -310,83 +255,107 @@ class Music(commands.Cog):
                 )
                 if player is None:
                     if text_channel:
-                        try:
-                            await text_channel.send(
-                                f"Could not play `{query}`. Skipping."
-                            )
-                        except Exception:
-                            pass
+                        await text_channel.send(f"Could not play `{query}`. Skipping.")
                     await self.play_next(gid, text_channel)
                     return
 
                 player.volume = self.get_vol(gid)
-
-                # Play with a safe after callback
                 vc.play(
                     player,
                     after=lambda e: self.bot.loop.call_soon_threadsafe(
-                        self.bot.loop.create_task, self.safe_play_next(gid)
+                        self.bot.loop.create_task,
+                        self.play_next(gid, self.text_channels.get(gid)),
                     ),
                 )
-
-                # store current
                 self.current[gid] = player
                 player.query = query
                 self.get_history(gid).append(player.title)
                 self.start_times[gid] = discord.utils.utcnow().timestamp()
 
-                # notify channel (avoid duplicate "Autoplaying" message)
                 if text_channel:
-                    try:
-                        last_message = None
-                        async for m in text_channel.history(limit=1):
-                            last_message = m
-                        if last_message is None or "Autoplaying" not in (
-                            last_message.content or ""
-                        ):
-                            await text_channel.send(
-                                f"Started playing: **{player.title}**."
-                            )
-                    except Exception:
-                        pass
+                    # Check if the last message was the autoplay announcement
+                    last_message = [m async for m in text_channel.history(limit=1)][0]
+                    if "Autoplaying" not in last_message.content:
+                        await text_channel.send(f"Started playing: **{player.title}**.")
 
             except Exception as e:
                 print(f"Error playing {query}: {e}")
                 if text_channel:
-                    try:
-                        await text_channel.send(f"Failed to play `{query}`. Skipping.")
-                    except Exception:
-                        pass
-                # attempt next
+                    await text_channel.send(f"Failed to play `{query}`. Skipping.")
                 await self.play_next(gid, text_channel)
         else:
-            # No voice client -> clear current
             self.current.pop(gid, None)
 
-    # -------------------
-    # Interaction check (voice channel same as bot)
-    # -------------------
+    # --- Command Checks ---
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Check if the user is in the same voice channel as the bot."""
         vc = interaction.guild.voice_client
-        # allow play and playnext to summon
-        if interaction.command and interaction.command.name in ("play", "playnext"):
-            return True
         if not vc or not vc.is_connected():
+            return True  # Allow commands if bot is not in a channel
+
+        # Allow /play even if not in the same channel, as it can be used to summon the bot
+        if interaction.command.name in ("play", "playnext"):
             return True
+
         if interaction.user.voice and interaction.user.voice.channel == vc.channel:
             return True
+
         await interaction.response.send_message(
             "You must be in the same voice channel as the bot to use this command.",
             ephemeral=True,
         )
         return False
 
-    # -------------------
-    # Commands
-    # -------------------
+    # --- Events ---
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        """Handle the bot leaving an empty voice channel."""
+        # Ignore the bot's own voice state updates or if the user is just muting/deafening
+        if member.id == self.bot.user.id or before.channel == after.channel:
+            return
+
+        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+
+        # If the bot is not in a voice channel, or the event is not for the bot's channel, ignore it
+        if not vc or not vc.channel or before.channel != vc.channel:
+            return
+
+        # Check if the bot is now the only member in the channel
+        if len(vc.channel.members) == 1 and vc.channel.members[0] == self.bot.user:
+            gid = member.guild.id
+            text_channel = self.text_channels.get(gid)
+
+            if text_channel:
+                await text_channel.send(
+                    "Leaving because there is no one in the voice channel."
+                )
+
+            self.get_queue(gid).clear()
+
+            if vc.is_playing() or vc.is_paused():
+                vc.stop()
+
+            await vc.disconnect()
+
+            # Clean up all associated data for the guild
+            for d in [
+                self.queues,
+                self.current,
+                self.history,
+                self.loop_states,
+                self.volumes,
+                self.filters,
+                self.autoplay_states,
+                self.start_times,
+                self.text_channels,
+                self.locks,  # Also clear the lock
+            ]:
+                d.pop(gid, None)
+
+    # --- Playback Commands ---
     @app_commands.command(name="play", description="Play music from search or link")
     @app_commands.describe(query="YouTube URL, Spotify URL or name search")
-    async def play(self, inter: discord.Interaction, query: str):
+    async def play(self, inter, query: str):
         await inter.response.defer(thinking=True)
 
         tracks = []
@@ -406,6 +375,7 @@ class Music(commands.Cog):
         else:
             tracks = [query]
 
+        # Acquire the lock for this guild to prevent race conditions
         lock = self.get_lock(inter.guild.id)
         async with lock:
             q = self.get_queue(inter.guild.id)
@@ -417,8 +387,10 @@ class Music(commands.Cog):
                 if not vc:
                     return
 
+            # Store the channel where the command was initiated
             self.text_channels[inter.guild.id] = inter.channel
 
+            # If the bot isn't already playing, start the player.
             if not vc.is_playing() and not vc.is_paused():
                 await self.play_next(inter.guild.id, inter.channel)
 
@@ -435,7 +407,7 @@ class Music(commands.Cog):
         name="playnext", description="Add a song to the front of the queue"
     )
     @app_commands.describe(query="YouTube URL, Spotify URL or name search")
-    async def playnext(self, inter: discord.Interaction, query: str):
+    async def playnext(self, inter, query: str):
         await inter.response.defer(thinking=True)
 
         tracks = []
@@ -455,6 +427,7 @@ class Music(commands.Cog):
         else:
             tracks = [query]
 
+        # Acquire the lock for this guild to prevent race conditions
         lock = self.get_lock(inter.guild.id)
         async with lock:
             q = self.get_queue(inter.guild.id)
@@ -466,8 +439,10 @@ class Music(commands.Cog):
                 if not vc:
                     return
 
+            # Store the channel where the command was initiated
             self.text_channels[inter.guild.id] = inter.channel
 
+            # If the bot isn't already playing, start the player.
             if not vc.is_playing() and not vc.is_paused():
                 await self.play_next(inter.guild.id, inter.channel)
 
@@ -481,60 +456,58 @@ class Music(commands.Cog):
             )
 
     @app_commands.command(name="skip", description="Skip current song")
-    async def skip(self, inter: discord.Interaction):
+    async def skip(self, inter):
         vc = inter.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            try:
-                vc.stop()
-            except Exception:
-                pass
+            vc.stop()
             await inter.response.send_message("Skipped.")
         else:
             await inter.response.send_message("Nothing is playing.")
 
     @app_commands.command(name="stop", description="Stop music and leave voice channel")
-    async def stop(self, inter: discord.Interaction):
+    async def stop(self, inter):
         gid = inter.guild.id
         self.set_autoplay(gid, False)
         vc = inter.guild.voice_client
         if vc:
-            try:
-                self.get_queue(gid).clear()
-                vc.stop()
-            except Exception:
-                pass
-            try:
-                await vc.disconnect()
-            except Exception:
-                pass
-        self.cleanup_guild_data(gid)
+            self.get_queue(gid).clear()
+            vc.stop()
+            await vc.disconnect()
+        # Clean up all associated data for the guild
+        for d in [
+            self.queues,
+            self.current,
+            self.history,
+            self.loop_states,
+            self.volumes,
+            self.filters,
+            self.autoplay_states,
+            self.start_times,
+            self.text_channels,
+            self.locks,
+        ]:
+            d.pop(gid, None)
         await inter.response.send_message(
             "Music stopped in the server, see you next time."
         )
 
     @app_commands.command(name="pause", description="Pause or resume playback (toggle)")
-    async def pause(self, inter: discord.Interaction):
+    async def pause(self, inter):
         vc = inter.guild.voice_client
         if not vc or (not vc.is_playing() and not vc.is_paused()):
             await inter.response.send_message("Nothing is playing.")
             return
         if vc.is_playing():
-            try:
-                vc.pause()
-            except Exception:
-                pass
+            vc.pause()
             await inter.response.send_message("Paused.")
         elif vc.is_paused():
-            try:
-                vc.resume()
-            except Exception:
-                pass
+            vc.resume()
             await inter.response.send_message("Resumed.")
 
     @app_commands.command(
         name="back", description="Play the previous song from history"
     )
-    async def back(self, inter: discord.Interaction):
+    async def back(self, inter):
         gid = inter.guild.id
         history = self.get_history(gid)
         cur = self.current.get(gid)
@@ -551,14 +524,12 @@ class Music(commands.Cog):
             return await inter.response.send_message("No previous song in history.")
         prev_title = history.pop()  # Get previous song
         self.get_queue(gid).insert(0, prev_title)
-        try:
-            vc.stop()
-        except Exception:
-            pass
+        vc.stop()
         await inter.response.send_message(f"Playing previous song: **{prev_title}**")
 
+    # --- Queue Management Commands ---
     @app_commands.command(name="queue", description="Show the queue")
-    async def queue_cmd(self, inter: discord.Interaction):
+    async def queue_cmd(self, inter):
         q = self.get_queue(inter.guild.id)
         cur = self.current.get(inter.guild.id)
         if not q and not cur:
@@ -592,7 +563,7 @@ class Music(commands.Cog):
         await inter.response.send_message(embed=em)
 
     @app_commands.command(name="nowplaying", description="What's playing")
-    async def nowplaying(self, inter: discord.Interaction):
+    async def nowplaying(self, inter):
         cur = self.current.get(inter.guild.id)
         if cur:
             dur = int(cur.data.get("duration", 0))
@@ -612,19 +583,18 @@ class Music(commands.Cog):
             await inter.response.send_message("Nothing is playing.")
 
     @app_commands.command(name="clear", description="Clear the queue")
-    async def clear(self, inter: discord.Interaction):
+    async def clear(self, inter):
         self.get_queue(inter.guild.id).clear()
         await inter.response.send_message("Queue cleared.")
 
     @app_commands.command(name="shuffle", description="Shuffle the queue")
-    async def shuffle(self, inter: discord.Interaction):
-        q = self.get_queue(inter.guild.id)
-        random.shuffle(q)
+    async def shuffle(self, inter):
+        random.shuffle(self.get_queue(inter.guild.id))
         await inter.response.send_message("Queue shuffled.")
 
     @app_commands.command(name="remove", description="Remove song from queue")
     @app_commands.describe(idx="Song position")
-    async def remove(self, inter: discord.Interaction, idx: int):
+    async def remove(self, inter, idx: int):
         q = self.get_queue(inter.guild.id)
         if 1 <= idx <= len(q):
             removed = q.pop(idx - 1)
@@ -634,7 +604,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="move", description="Move song in queue")
     @app_commands.describe(frm="From position", to="To position")
-    async def move(self, inter: discord.Interaction, frm: int, to: int):
+    async def move(self, inter, frm: int, to: int):
         q = self.get_queue(inter.guild.id)
         if not all(1 <= x <= len(q) for x in (frm, to)):
             return await inter.response.send_message("Invalid positions.")
@@ -644,15 +614,16 @@ class Music(commands.Cog):
 
     @app_commands.command(name="swap", description="Swap songs in queue")
     @app_commands.describe(a="First song", b="Second song")
-    async def swap(self, inter: discord.Interaction, a: int, b: int):
+    async def swap(self, inter, a: int, b: int):
         q = self.get_queue(inter.guild.id)
         if not all(1 <= x <= len(q) for x in (a, b)):
             return await inter.response.send_message("Invalid positions.")
         q[a - 1], q[b - 1] = q[b - 1], q[a - 1]
         await inter.response.send_message(f"Swapped positions {a} and {b}.")
 
+    # --- Audio Settings and Effects ---
     @app_commands.command(name="loop", description="Toggle loop mode")
-    async def loop(self, inter: discord.Interaction):
+    async def loop(self, inter):
         gid = inter.guild.id
         cur = self.get_loop(gid)
         nxt = "song" if cur is None else "queue" if cur == "song" else None
@@ -661,33 +632,28 @@ class Music(commands.Cog):
 
     @app_commands.command(name="volume", description="Set playback volume (max 200%)")
     @app_commands.describe(level="Volume level (0-200)")
-    async def volume(self, inter: discord.Interaction, level: int):
+    async def volume(self, inter, level: int):
         capped = max(0, min(level, 200))
         self.set_vol(inter.guild.id, capped / 100)
         await inter.response.send_message(f"Volume set to **{capped}%**")
 
     @app_commands.command(name="seek", description="Seek in current song")
     @app_commands.describe(position="Time in seconds")
-    async def seek(self, inter: discord.Interaction, position: int):
+    async def seek(self, inter, position: int):
         vc = inter.guild.voice_client
         cur = self.current.get(inter.guild.id)
         if not vc or not cur:
             return await inter.response.send_message("Nothing playing.")
 
-        # Simple reload-based seek: requeue current with seek position encoded in query (advanced seeking is more complex)
-        # We'll reinsert the current query so that player reloads (YTDL/FFmpeg-based real seeking needs more handling).
         self.get_queue(inter.guild.id).insert(0, cur.query)
-        try:
-            vc.stop()
-        except Exception:
-            pass
+
+        # This is a simple reload-based seek. True seeking is more complex.
+        vc.stop()
         await inter.response.send_message(f"Seeking to {position}s (reloading...).")
 
     @app_commands.command(name="speed", description="Set playback speed")
     @app_commands.describe(rate="Speed from 0.5x to 2.0x")
-    async def speed(
-        self, inter: discord.Interaction, rate: app_commands.Range[float, 0.5, 2.0]
-    ):
+    async def speed(self, inter, rate: app_commands.Range[float, 0.5, 2.0]):
         cur = self.current.get(inter.guild.id)
         vc = inter.guild.voice_client
         if not vc or not cur:
@@ -696,10 +662,7 @@ class Music(commands.Cog):
         await inter.response.defer(thinking=True)
         self.set_speed(inter.guild.id, rate)
         self.get_queue(inter.guild.id).insert(0, cur.query)
-        try:
-            vc.stop()
-        except Exception:
-            pass
+        vc.stop()
         await inter.followup.send(f"Playback speed set to {rate}x (reloading...)")
 
     @app_commands.command(name="filter", description="Apply an audio filter")
@@ -711,7 +674,7 @@ class Music(commands.Cog):
             app_commands.Choice(name=key, value=key) for key in AUDIO_FILTERS.keys()
         ]
     )
-    async def filter(self, inter: discord.Interaction, filter_name: str):
+    async def filter(self, inter, filter_name: str):
         gid = inter.guild.id
         vc = inter.guild.voice_client
         cur = self.current.get(gid)
@@ -721,10 +684,7 @@ class Music(commands.Cog):
         if vc and cur:
             await inter.response.defer(thinking=True)
             self.get_queue(gid).insert(0, cur.query)
-            try:
-                vc.stop()
-            except Exception:
-                pass
+            vc.stop()
             await inter.followup.send(
                 f"Filter set to **{filter_name}**. Reloading current song..."
             )
@@ -732,7 +692,7 @@ class Music(commands.Cog):
             await inter.response.send_message(f"Filter set to **{filter_name}**.")
 
     @app_commands.command(name="autoplay", description="Toggle autoplay mode")
-    async def autoplay(self, inter: discord.Interaction):
+    async def autoplay(self, inter):
         gid = inter.guild.id
         current_state = self.get_autoplay(gid)
         new_state = not current_state
@@ -742,7 +702,9 @@ class Music(commands.Cog):
         )
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
+    with open("config.json") as f:
+        cfg = json.load(f)
     spotify_helper = SpotifyHelper(
         client_id=cfg["spotify_client_id"], client_secret=cfg["spotify_client_secret"]
     )

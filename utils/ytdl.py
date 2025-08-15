@@ -4,25 +4,14 @@ from yt_dlp import YoutubeDL
 
 # YTDL format options
 ytdl_format_options = {
-    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",  # Prefer non-DASH
+    "format": "bestaudio/best",
+    "noplaylist": True,
     "quiet": True,
-    "no_warnings": True,
-    "skip_unavailable_fragments": True,
-    "source_address": "0.0.0.0",  # Force IPv4
-    "nocheckcertificate": True,
-    "extract_flat": False,  # Get real URLs
-    "noplaylist": True,  # Single track only
-    "concurrent_fragment_downloads": 1,  # Avoid too many parallel requests
-    "force_ipv4": True,
-    "extractor_args": {"youtube": {"player_client": ["web"]}},  # Avoid tv/ios clients
-    "http_headers": {  # Mimic Chrome
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/128.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    },
+    "source_address": "0.0.0.0",
+    "add_header": [
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    ],
 }
 
 # FFmpeg options
@@ -31,27 +20,28 @@ ffmpeg_options = {
     "options": "-vn",
 }
 
+# Initialize YoutubeDL
 ytdl = YoutubeDL(ytdl_format_options)
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
-    """A class for streaming audio from YouTube or other sources."""
+    """A class for streaming audio from YouTube."""
 
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
-        self.webpage_url = data.get("webpage_url")  # Always keep the original page link
+        self.url = data.get("url")
 
     @classmethod
     async def from_query(cls, query, *, loop=None, speed=1.0, filter_options=None):
+        """Create a YTDLSource from a search query or URL."""
         loop = loop or asyncio.get_event_loop()
 
         if not query.startswith("http"):
             query = f"ytsearch:{query}"
 
         try:
-            # Step 1: Extract info (just metadata, no download)
             data = await loop.run_in_executor(
                 None, lambda: ytdl.extract_info(query, download=False)
             )
@@ -64,22 +54,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 data = data["entries"][0]
 
             if not data or "url" not in data:
-                print(f"Invalid data for query: {query} - URL not found.")
+                print(f"Invalid data for query: {query}")
                 return None
 
-            # Step 2: Re-extract URL right before playback to avoid 403
-            fresh_info = await loop.run_in_executor(
-                None, lambda: ytdl.extract_info(data["webpage_url"], download=False)
-            )
-
-            if "entries" in fresh_info:
-                fresh_info = fresh_info["entries"][0]
-
-            if not fresh_info or "url" not in fresh_info:
-                print(f"Could not refresh stream URL for: {data['title']}")
-                return None
-
-            # Step 3: Build FFmpeg options
             ffmpeg_opts = ffmpeg_options.copy()
             options = ffmpeg_opts.get("options", "")
 
@@ -94,10 +71,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
             ffmpeg_opts["options"] = options
 
-            return cls(
-                discord.FFmpegPCMAudio(fresh_info["url"], **ffmpeg_opts),
-                data=fresh_info,
-            )
+            return cls(discord.FFmpegPCMAudio(data["url"], **ffmpeg_opts), data=data)
 
         except Exception as e:
             print(f"Error in from_query({query}): {e}")
