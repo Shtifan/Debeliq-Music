@@ -4,14 +4,14 @@ from yt_dlp import YoutubeDL
 
 # YTDL format options
 ytdl_format_options = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
     "quiet": True,
     "source_address": "0.0.0.0",
-    "add_header": [
-        "User-Agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    ],
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
+        "Accept-Language": "en-US,en;q=0.5",
+    },
 }
 
 # FFmpeg options
