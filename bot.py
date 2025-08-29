@@ -19,15 +19,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     """Event handler for when the bot is ready."""
-    print(f"Logged in as {bot.user.name}.")
+    print(f"Logged in as {bot.user.name}")
     try:
-        # Sync commands for each guild
-        for guild in bot.guilds:
-            await bot.tree.sync(guild=guild)
-        
-        synced = await bot.tree.sync() # Sync global commands as a fallback
+        # Sync global commands
+        synced = await bot.tree.sync()
         print(f"Synced {len(synced)} global commands.")
-
     except Exception as e:
         print(f"Error syncing commands: {e}")
 
