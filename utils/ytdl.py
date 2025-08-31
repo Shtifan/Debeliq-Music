@@ -51,6 +51,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 return None
 
             if "entries" in data:
+                # Add a check for an empty list
+                if not data["entries"]:
+                    print(f"No search results for query: {query}")
+                    return None
                 data = data["entries"][0]
 
             if not data or "url" not in data:
